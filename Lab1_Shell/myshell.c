@@ -9,11 +9,12 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <signal.h>
 
 #define true 1   
 #define MAXLINE 1024 /* max size of cmdline */
 #define MAXPARA 32  /*max number of parameters*/
-#define MAXHISTORY 10  /*max number of history cmd*/
+#define HISTORY_N  10 /*max number of history cmd*/ /*dynamic malloc*/
 #define MEMOINFO_LEN 5
 #define INVALID_CMD 0
 #define BUILDIN_CMD 1
@@ -26,22 +27,19 @@
 
 /*global variables*/
 char prompt[] = "(myshell)# ";
-char* history_cmd[MAXHISTORY];  /*keep all cmdlines*/
+char** history_cmd;  /*keep all cmdlines*/
 int h = 0; /*number of history cmds*/
-
+int all_his_num = 0;
 void print_prompt();
 void read_command(char* commandline);
 int parse(char commandline[], char** cmd, char** parameters, int* argc);
 void exec(char* commandline);
 int buildin_cmd(char* cmd, char** parameters, int argc);
-
-void exec_exit();
 void exec_cd(char** parameters, int argc);
-void exec_pwd();
 void print_history(int argc, char* parameters[MAXPARA]);
 // void exec_mytop();
 void parse_memoinfo(int* content);
-long unsigned int print_meminfo();
+void print_meminfo();
 void callRedirect_out(char* commandline);
 void callRedirect_in(char* commandline);
 void parse_program(char* input, char** cmd, char** parameter_list);
@@ -50,6 +48,7 @@ void program(char* commandline);
 
 int main(){
     char* commandline;
+    history_cmd = (char**)malloc(HISTORY_N*sizeof(char*));
     while(true){
         print_prompt();  /*print prompt*/
         char* tem = (char*)malloc(MAXLINE);
@@ -73,8 +72,18 @@ void read_command(char* tem){
     //}
     fgets(tem, MAXLINE, stdin);
     tem[strlen(tem)-1] = '\0';  /*fgets 获取的输入结尾会包含\n*/
-    if(h>MAXHISTORY) h=0;  /*防止溢出*/
+    // if(h>MAXHISTORY) h=0;  /*防止溢出*/
+    // history_cmd[h++] = tem;
+    if(h==HISTORY_N){
+        h = 0;
+        if((history_cmd = (char**)realloc(history_cmd[h], HISTORY_N*sizeof(char*)))==NULL){
+            printf("malloc failed!");
+            exit(1);
+        }    
+    }
+    history_cmd[h] = (char*)malloc(MAXLINE*sizeof(char));
     history_cmd[h++] = tem;
+    all_his_num += 1;
     return ;
 }
 
@@ -98,13 +107,25 @@ void exec(char* commandline){
         }else if(cmd_type == PROGRAM_CMD){
             program(commandline);
         }
-    }else{  /*background*/  
+    }else{  /*background*/ 
         if(fork() == 0){
-            commandline[strlen(commandline)] = '\0';
-            exec(commandline);
+            char* cmdline = (char*)malloc(MAXLINE*sizeof(char));
+            cmdline = strncpy(cmdline, commandline, strlen(commandline)-1);
+            char* cmd = "vi";
+            char* parameter_list[3] = {"vi", "result.txt", NULL};
+            signal(SIGCHLD, SIG_IGN); // let parent ignore SIGCHLD
+            int a = open("/dev/null", O_RDONLY);
+    	    dup2(a, STD_INPUT);
+            dup2(a, STD_OUTPUT);
+            dup2(a, 2);
+            // parse_program(cmdline, &cmd, parameter_list);
+            execvp(cmd, parameter_list);
+            //printf("Commanline error. Execute failed.");
             exit(0);
-         }   
-        return ;
+         }else{
+         	// exit(0);
+         }
+         return ;
     }
 }
 
@@ -117,11 +138,13 @@ int parse(char commandline[], char** cmd, char** parameters, int* argc){
     p = strtok(buf, " ");  /*partition with space*/
     if(p){
         *cmd = p;
+        parameters[i++] = p;
     }
     while((p = strtok(NULL, " "))){
         parameters[i++] = p;
     }
-    if(p && *parameters[i-1] == '&'){
+    // printf("parameters[i-1]:%s\n", parameters[i-1]);
+    if(strcmp(parameters[i-1], "&")==0){
         /*execute background here*/
         bg = 1;
     }
@@ -151,9 +174,9 @@ int buildin_cmd(char* cmd, char** parameters, int argc){
     }else if(strcmp(cmd, "history")==0){
         print_history(argc, parameters);
     }else if(strcmp(cmd, "pwd")==0){
-        exec_pwd();
+        printf("%s\n", getcwd(NULL, 0));
     }else if(strcmp(cmd, "exit")==0){
-        exec_exit();
+        exit(0);
     }else if(strcmp(cmd, "mytop")==0){
         // exec_mytop();
     }else{
@@ -162,32 +185,27 @@ int buildin_cmd(char* cmd, char** parameters, int argc){
     return type;
 }
 
-void exec_exit(){
-    exit(0);
-}
 
 void exec_cd(char** parameters, int argc){
-    if(argc != 1){  /*cd 的参数一般只有一个路径*/
+    if(argc != 2){  /*cd 的参数一般只有一个路径*/
         printf("illegal parameter.\n");
     }else{  /*参数数量正确*/
-        if(chdir(parameters[0]) < 0){  /*判断是否切换目录成功，不成功返回-1*/
+        if(chdir(parameters[1]) < 0){  /*判断是否切换目录成功，不成功返回-1*/
             printf("can't cd to %s\n", parameters[0]);
         }
     }
 }
-void exec_pwd(){
-    printf("%s\n", getcwd(NULL, 0));
-}
+
 
 void print_history(int argc, char* parameters[MAXPARA]){
-    if(argc == 0){
-
+    if(argc == 1){
         for(int i =0; history_cmd[i]!=NULL; i++){
             printf("%s\n", history_cmd[i]);
         }        
-    }else if(argc == 1){
-        int n = *parameters[0]-48;  /*参数是char*类型*/
-        for(int i =0; i < n && history_cmd[i]!=NULL; i++){
+    }else if(argc > 1){
+        int n = atoi(*parameters[1]);  /*参数是char*类型*/
+        if(n > all_his_num) n= all_his_num;
+        for(int i =n; i >0; i--){
             printf("%s\n", history_cmd[i]);
         }        
     }
@@ -221,7 +239,7 @@ void parse_memoinfo(int* content){
     }    
 }
 
-long unsigned int print_meminfo(){
+void print_meminfo(){
     int content[MEMOINFO_LEN];
     parse_memoinfo(content);  /*获取了meminfo 的内容*/
     int pagesize = content[0];
@@ -266,7 +284,7 @@ void callRedirect_out(char* commandline){
     /*对输出，判断输出部分是否有效*/
     int fp = open(output, O_WRONLY, 6666);
     if(fp < 0){
-        printf("文件打开失败: %s\n", output);
+        printf("File open failed: %s\n", output);
         return;
     }
     /*解析input的cmd, parameter_list*/
@@ -329,7 +347,7 @@ void callRedirect_in(char* commandline){
     /*对输入文件，判断输出部分是否有效*/
     int fp = open(input, O_RDONLY, 6666);  // 只写变只读
     if(fp < 0){
-        printf("文件打开失败: %s\n", input);
+        printf("File open failed: %s\n", input);
         return;
     }
     /*解析output的cmd, parameter_list*/
@@ -443,7 +461,7 @@ void program(char* commandline){
     parse_program(commandline, &cmd ,parameter_list);
     if(fork() == 0){
         if(execvp(cmd, parameter_list) < 0){
-            printf("execute %s failed.", commandline);
+            printf("execute %s failed.\n", commandline);
         }  
         exit(0); 
     }else{
