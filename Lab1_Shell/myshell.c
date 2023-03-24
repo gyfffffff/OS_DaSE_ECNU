@@ -205,7 +205,7 @@ void print_history(int argc, char* parameters[MAXPARA]){
     }else if(argc > 1){
         int n = atoi(parameters[1]);  /*参数是char*类型*/
         if(n > all_his_num) n= all_his_num;
-        for(int i =n; i >0; i--){
+        for(int i =n-1; i >=0; i--){
             printf("%s\n", history_cmd[i]);
         }        
     }
