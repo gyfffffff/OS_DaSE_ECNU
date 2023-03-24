@@ -37,7 +37,7 @@ void exec(char* commandline);
 int buildin_cmd(char* cmd, char** parameters, int argc);
 void exec_cd(char** parameters, int argc);
 void print_history(int argc, char* parameters[MAXPARA]);
-// void exec_mytop();
+void exec_mytop();
 void parse_memoinfo(int* content);
 void print_meminfo();
 void callRedirect_out(char* commandline);
@@ -178,7 +178,7 @@ int buildin_cmd(char* cmd, char** parameters, int argc){
     }else if(strcmp(cmd, "exit")==0){
         exit(0);
     }else if(strcmp(cmd, "mytop")==0){
-        // exec_mytop();
+        exec_mytop();
     }else{
         type = PROGRAM_CMD;
     }
@@ -203,18 +203,41 @@ void print_history(int argc, char* parameters[MAXPARA]){
             printf("%s\n", history_cmd[i]);
         }        
     }else if(argc > 1){
-        int n = atoi(*parameters[1]);  /*参数是char*类型*/
+        int n = atoi(parameters[1]);  /*参数是char*类型*/
         if(n > all_his_num) n= all_his_num;
         for(int i =n; i >0; i--){
             printf("%s\n", history_cmd[i]);
         }        
     }
 }
+int print_memory(void)
+{
+	FILE *fp;
+	unsigned int pagesize;
+	unsigned long total, free, largest, cached;
 
-// void exec_mytop(){
-//     print_meminfo();
-//     print_CPU_usage();
-// }
+	if ((fp = fopen("meminfo", "r")) == NULL)
+		return 0;
+
+	if (fscanf(fp, "%u %lu %lu %lu %lu", &pagesize, &total, &free,
+			&largest, &cached) != 5) {
+		fclose(fp);
+		return 0;
+	}
+
+	fclose(fp);
+
+	printf("main memory: %ldK total, %ldK free, %ldK contig free, "
+		"%ldK cached\n",
+		(pagesize * total)/1024, (pagesize * free)/1024,
+		(pagesize * largest)/1024, (pagesize * cached)/1024);
+
+	return 1;
+}
+
+void exec_mytop(){
+    print_memory();
+}
 
 void parse_memoinfo(int* content){
     int f_meminfo;   /*./proc/meminfo 文件编号*/
@@ -469,3 +492,4 @@ void program(char* commandline){
     }
 
 }
+
