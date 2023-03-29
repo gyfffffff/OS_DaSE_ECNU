@@ -89,7 +89,7 @@ void callRedirect_out(char* commandline);
 void callRedirect_in(char* commandline);
 void parse_program(char* input, char** cmd, char** parameter_list);
 void pipeline(char* commamdline);
-void program(char* commandline);
+void program(char* comandline);
 
 struct tp
 {
@@ -177,15 +177,13 @@ void exec(char* commandline){
         if(fork() == 0){
             char* cmdline = (char*)malloc(MAXLINE*sizeof(char));
             cmdline = strncpy(cmdline, commandline, strlen(commandline)-1);
-            char* cmd = "vi";
-            char* parameter_list[3] = {"vi", "result.txt", NULL};
             signal(SIGCHLD, SIG_IGN); // let parent ignore SIGCHLD
             int a = open("/dev/null", O_RDONLY);
     	    dup2(a, STD_INPUT);
             dup2(a, STD_OUTPUT);
             dup2(a, 2);
             // parse_program(cmdline, &cmd, parameter_list);
-            execvp(cmd, parameter_list);
+            execvp(cmd, parameters);
             //printf("Commanline error. Execute failed.");
             exit(0);
          }else{
@@ -214,6 +212,7 @@ int parse(char commandline[], char** cmd, char** parameters, int* argc){
         /*execute background here*/
         bg = 1;
     }
+    parameters[i] = NULL; 
     *argc = i;
     return bg;
 }
@@ -265,13 +264,13 @@ void exec_cd(char** parameters, int argc){
 void print_history(int argc, char* parameters[MAXPARA]){
     if(argc == 1){
         for(int i =0; history_cmd[i]!=NULL; i++){
-            printf("%s\n", history_cmd[i]);
+            printf("%d  %s\n", i+1, history_cmd[i]);
         }        
     }else if(argc > 1){
         int n = atoi(parameters[1]);  /*参数是char*类型*/
         if(n > all_his_num) n= all_his_num;
         for(int i =n-1; i >=0; i--){
-            printf("%s\n", history_cmd[i]);
+            printf("%d  %s\n", i+1, history_cmd[i]);
         }        
     }
 }
@@ -564,39 +563,36 @@ void exec_mytop(){
     int cputimemode = 1;
     getkinfo();
     signal(SIGWINCH, sigwinch);
-    while(true){
-        print_memory();
+    print_memory();
+    get_procs();
+    if(prev_proc == NULL){
         get_procs();
-        if(prev_proc == NULL){
-            get_procs();
-        }  
-        print_procs(prev_proc, proc, cputimemode);
-        sleep(2);
-    }
+    }  
+    print_procs(prev_proc, proc, cputimemode);
 }
 
-void parse_memoinfo(int* content){
-    int f_meminfo;   /*./proc/meminfo 文件编号*/
-    if((f_meminfo = open("./proc/meminfo", O_RDONLY))<0){  /*打开meminfo， 失败则返回-1*/
-        printf("open /proc/meminfo failed.");
-    }
-    char buf[64];  /*保存读取的内容*/
-    char* tem = (char*)malloc(10);  /*临时保存读取的内容，每遇到一个空格就转化成数字并清空*/
-    int t = 0;  /*指示tem 实际使用大小*/
-    int c = 0;  /*指示content 实际使用大小*/
-    while(read(f_meminfo, buf, 1)){   /*每次读一个字符*/
-        tem[t++] = *buf;  /*存入临时文件*/
-        if(buf[0] == ' '){  /*如果读到空格就将tem里的内容转成整型并清空*/
-            content[c++] = atoi(tem);
-            t = 0;
-            free(tem);
-        }
-    }
-    content[c++] = atoi(tem);  /*while 结束后还有最后一条记录就在tem里*/
-    if(close(f_meminfo)<0){  /*关闭文件*/
-        printf("close file failed.");
-    }    
-}
+// void parse_memoinfo(int* content){
+//     int f_meminfo;   /*./proc/meminfo 文件编号*/
+//     if((f_meminfo = open("./proc/meminfo", O_RDONLY))<0){  /*打开meminfo， 失败则返回-1*/
+//         printf("open /proc/meminfo failed.");
+//     }
+//     char buf[64];  /*保存读取的内容*/
+//     char* tem = (char*)malloc(10);  /*临时保存读取的内容，每遇到一个空格就转化成数字并清空*/
+//     int t = 0;  /*指示tem 实际使用大小*/
+//     int c = 0;  /*指示content 实际使用大小*/
+//     while(read(f_meminfo, buf, 1)){   /*每次读一个字符*/
+//         tem[t++] = *buf;  /*存入临时文件*/
+//         if(buf[0] == ' '){  /*如果读到空格就将tem里的内容转成整型并清空*/
+//             content[c++] = atoi(tem);
+//             t = 0;
+//             free(tem);
+//         }
+//     }
+//     content[c++] = atoi(tem);  /*while 结束后还有最后一条记录就在tem里*/
+//     if(close(f_meminfo)<0){  /*关闭文件*/
+//         printf("close file failed.");
+//     }    
+// }
 
 /*自己实现打印内存信息*/
 // void print_meminfo(){
@@ -816,12 +812,14 @@ void pipeline(char* commamdline){
     }
 }
 void program(char* commandline){
+    char buf[MAXLINE];
+    strcpy(buf, commandline);
     char* cmd;
     char* parameter_list[MAXPARA];
-    parse_program(commandline, &cmd ,parameter_list);
+    parse_program(buf, &cmd ,parameter_list);
     if(fork() == 0){
         if(execvp(cmd, parameter_list) < 0){
-            printf("execute %s failed.\n", commandline);
+            printf("execute %s failed.\n", cmd);
         }  
         exit(0); 
     }else{
