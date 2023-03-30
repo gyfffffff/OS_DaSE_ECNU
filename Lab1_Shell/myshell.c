@@ -116,7 +116,7 @@ int main(){
     char* commandline;
     history_cmd = (char**)malloc(HISTORY_N*sizeof(char*));
     while(true){
-        print_prompt();  /*print prompt*/
+        printf("%s", prompt);  /*print prompt*/
         char* tem = (char*)malloc(MAXLINE);
         read_command(tem);
         commandline = tem;
@@ -124,22 +124,9 @@ int main(){
     }
 }
 
-void print_prompt(){
-    printf("%s", prompt);
-    // fflush(stdout);
-}
-
 void read_command(char* tem){
-    //char ch;
-    //int i =0;
-    //getchar();
-    //while((ch=getchar())!='\n'&&ch!=EOF){
-    //    tem[i++] = ch;
-    //}
     fgets(tem, MAXLINE, stdin);
     tem[strlen(tem)-1] = '\0';  /*fgets 获取的输入结尾会包含\n*/
-    // if(h>MAXHISTORY) h=0;  /*防止溢出*/
-    // history_cmd[h++] = tem;
     if(h==HISTORY_N){
         h = 0;
         if((history_cmd = (char**)realloc(history_cmd[h], HISTORY_N*sizeof(char*)))==NULL){
@@ -163,10 +150,8 @@ void exec(char* commandline){
         if(cmd_type == BUILDIN_CMD){
             return ;
         }else if(cmd_type == REDIRECT_in_CMD){
-        	// printf("%s", commandline);
             callRedirect_in(commandline);
         }else if(cmd_type == REDIRECT_out_CMD){
-        	// printf("%s", commandline);
             callRedirect_out(commandline);
         }else if(cmd_type == PIPE_CMD){
             pipeline(commandline);
@@ -181,10 +166,8 @@ void exec(char* commandline){
             int a = open("/dev/null", O_RDONLY);
     	    dup2(a, STD_INPUT);
             dup2(a, STD_OUTPUT);
-            dup2(a, 2);
-            // parse_program(cmdline, &cmd, parameter_list);
+            dup2(a, 2);  // 防止输出警告
             execvp(cmd, parameters);
-            //printf("Commanline error. Execute failed.");
             exit(0);
          }else{
          	// exit(0);
@@ -207,9 +190,7 @@ int parse(char commandline[], char** cmd, char** parameters, int* argc){
     while((p = strtok(NULL, " "))){
         parameters[i++] = p;
     }
-    // printf("parameters[i-1]:%s\n", parameters[i-1]);
     if(strcmp(parameters[i-1], "&")==0){
-        /*execute background here*/
         bg = 1;
     }
     parameters[i] = NULL; 
@@ -465,7 +446,11 @@ char *ordername(int orderno)
 	}
 	return "invalid order";
 }
-
+/**
+ * 如果进程的USED标志位未被标记，则跳过该进程.
+ * 对于不同类型的进程
+ * 分别统计它们的CPU时间和对应的CPU状态的时间。
+ */
 void print_procs(struct proc *proc1, struct proc *proc2, int cputimemode)
 {
     int p, nprocs;
@@ -475,7 +460,6 @@ void print_procs(struct proc *proc1, struct proc *proc2, int cputimemode)
     u64_t idleticks = 0;
     u64_t kernelticks = 0;
     int blockedseen = 0;
-    //创建了一个struct tp的结构体数组
     static struct tp *tick_procs = NULL;
     if (tick_procs == NULL)
     {
@@ -490,12 +474,10 @@ void print_procs(struct proc *proc1, struct proc *proc2, int cputimemode)
     {
         u64_t uticks;
         if (!(proc2[p].p_flags & USED))
-        { //查看USED位是否被标记
+        { // 查看USED位是否被标记
             continue;
         }
-        tick_procs[nprocs].p = proc2 + p;//初始化
-        //tickprocs的第np个结构体的struct proc *p
-        //为proc2第p个文件的struct proc
+        tick_procs[nprocs].p = proc2 + p;// 初始化tickprocs的第np个结构体的struct proc *p为proc2第p个文件的struct proc
         tick_procs[nprocs].ticks = cputicks(&proc1[p], &proc2[p], cputimemode);
         uticks = cputicks(&proc1[p], &proc2[p], 1);
         total_ticks = total_ticks + uticks;
@@ -510,7 +492,6 @@ void print_procs(struct proc *proc1, struct proc *proc2, int cputimemode)
         }
         if (!(proc2[p].p_flags & IS_TASK))
         {
-            //如果是进程，则看是system还是user
             if (proc2[p].p_flags & IS_SYSTEM)
             {
                 systemticks = systemticks + tick_procs[nprocs].ticks;
@@ -750,12 +731,7 @@ void parse_program(char* input, char** cmd, char** parameter_list){
         parameter_list[i++] = p;
     }
     /*注意： 为了之后使用execvp，parameter_list要以NULL结尾*/
-    parameter_list[i] = NULL;
-    //printf("cmd:%s, len(cmd):%ld\n",*cmd, strlen(*cmd));
-    //for(int k = 0; k< i; k++){
-    //	printf("para:%s, len(para):%ld\n", parameter_list[k], strlen(parameter_list[k]));
-    //}
-    
+    parameter_list[i] = NULL;  
 }
 void pipeline(char* commamdline){
     /*解析命令行，找到输入输出*/
@@ -794,7 +770,6 @@ void pipeline(char* commamdline){
             close(STD_OUTPUT);  /*为新的标准输出让位*/
             dup(fd[1]); /*dup2(fd[1], STD_OUTPUT)*/
             close(fd[1]);  /*fd[1]不会再用到*/
-        // char* pa[] = {"ls", "-al", NULL};
             execvp(cmd_in, para_list_in);
             wait(NULL);
         }else{
@@ -803,7 +778,6 @@ void pipeline(char* commamdline){
             close(STD_INPUT); /*为新的标准输入让位*/
             dup(fd[0]);  /*dup2(fd[0], STD_INPUT)*/
             close(fd[0]); /*fd[0]不会再用到*/
-            //char* pa[]= {"grep", "txt", NULL};
             execvp(cmd_out, para_list_out);
             exit(0);
         }   	
@@ -826,4 +800,3 @@ void program(char* commandline){
         wait(NULL);
     }
 }
-
