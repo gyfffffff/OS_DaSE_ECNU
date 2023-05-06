@@ -1,0 +1,37 @@
+proc1 set success
+proc2 set success
+proc3 set success
+prc2 heart beat 1
+prc1 heart beat 1
+prc3 heart beat 1
+prc2 heart beat 2
+prc1 heart beat 2
+prc3 heart beat 2
+prc2 heart beat 3
+prc1 heart beat 3
+prc3 heart beat 3
+prc2 heart beat 4
+prc1 heart beat 4
+prc3 heart beat 4
+Change proc1 deadline to 5s
+prc1 heart beat 5
+prc2 heart beat 5
+prc3 heart beat 5
+prc1 heart beat 6
+prc2 heart beat 6
+prc3 heart beat 6
+prc1 heart beat 7
+prc2 heart beat 7
+prc3 heart beat 7
+prc1 heart beat 8
+prc2 heart beat 8
+prc3 heart beat 8
+prc2 heart beat 9
+prc3 heart beat 9
+Change proc3 deadline to 3s
+prc3 heart beat 10
+prc2 heart beat 10
+prc3 heart beat 11
+prc2 heart beat 11
+prc2 heart beat 12
+prc2 heart beat 13

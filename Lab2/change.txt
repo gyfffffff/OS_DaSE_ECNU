@@ -1,0 +1,893 @@
+diff --git a/include/unistd.h b/include/unistd.h
+index 9d13199..f62284a 100644
+--- a/include/unistd.h
++++ b/include/unistd.h
+@@ -143,7 +143,7 @@ int	 tcsetpgrp(int, pid_t);
+ __aconst char *ttyname(int);
+ int	 unlink(const char *);
+ ssize_t	 write(int, const void *, size_t);
+-
++int chrt(long);
+ 
+ /*
+  * IEEE Std 1003.2-92, adopted in X/Open Portability Guide Issue 4 and later
+diff --git a/minix/commands/service/parse.c b/minix/commands/service/parse.c
+index 478d2fa..91b6315 100644
+--- a/minix/commands/service/parse.c
++++ b/minix/commands/service/parse.c
+@@ -846,6 +846,7 @@ struct
+ 	{ "VMCTL",		SYS_VMCTL },
+ 	{ "MEMSET",		SYS_MEMSET },
+ 	{ "PADCONF",		SYS_PADCONF },
++	{ "CHRT",		SYS_CHRT },
+ 	{ NULL,		0 }
+ };
+ 
+diff --git a/minix/include/minix/callnr.h b/minix/include/minix/callnr.h
+index 6030687..19b4958 100644
+--- a/minix/include/minix/callnr.h
++++ b/minix/include/minix/callnr.h
+@@ -58,8 +58,8 @@
+ #define PM_GETEPINFO		(PM_BASE + 45)
+ #define PM_GETPROCNR		(PM_BASE + 46)
+ #define PM_GETSYSINFO		(PM_BASE + 47)
+-
+-#define NR_PM_CALLS		48	/* highest number from base plus one */
++#define PM_CHRT        (PM_BASE + 48)
++#define NR_PM_CALLS		49	/* highest number from base plus one */
+ 
+ /*===========================================================================*
+  *				Calls to VFS				     *
+diff --git a/minix/include/minix/com.h b/minix/include/minix/com.h
+index 637f77c..70db3ca 100644
+--- a/minix/include/minix/com.h
++++ b/minix/include/minix/com.h
+@@ -262,9 +262,10 @@
+ #  define SYS_SAFEMEMSET (KERNEL_CALL + 56)	/* sys_safememset() */
+ 
+ #  define SYS_PADCONF (KERNEL_CALL + 57)	/* sys_padconf() */
++#  define SYS_CHRT (KERNEL_CALL + 58)	/* sys_chrt() */
+ 
+ /* Total */
+-#define NR_SYS_CALLS	58	/* number of kernel calls */
++#define NR_SYS_CALLS	59	/* number of kernel calls */
+ 
+ #define SYS_CALL_MASK_SIZE BITMAP_CHUNKS(NR_SYS_CALLS)
+ 
+diff --git a/minix/include/minix/syslib.h b/minix/include/minix/syslib.h
+index a9ac487..2ed5b74 100644
+--- a/minix/include/minix/syslib.h
++++ b/minix/include/minix/syslib.h
+@@ -41,6 +41,7 @@ int sys_schedule(endpoint_t proc_ep, int priority, int quantum, int
+ 	cpu);
+ int sys_schedctl(unsigned flags, endpoint_t proc_ep, int priority, int
+ 	quantum, int cpu);
++int sys_chrt(endpoint_t proc_ep,long deadline);
+ 
+ /* Shorthands for sys_runctl() system call. */
+ #define sys_stop(proc_ep) sys_runctl(proc_ep, RC_STOP, 0)
+diff --git a/minix/kernel/config.h b/minix/kernel/config.h
+index a99b299..d150f91 100644
+--- a/minix/kernel/config.h
++++ b/minix/kernel/config.h
+@@ -2,7 +2,7 @@
+ #define CONFIG_H
+ 
+ /* This file defines the kernel configuration. It allows to set sizes of some
+- * kernel buffers and to enable or disable debugging code, timing features, 
++ * kernel buffers and to enable or disable debugging code, timing features,
+  * and individual kernel calls.
+  *
+  * Changes:
+@@ -39,21 +39,22 @@
+ #define USE_UMAP       	   1	/* map virtual to physical address */
+ #define USE_UMAP_REMOTE	   1	/* sys_umap on behalf of another process */
+ #define USE_VUMAP      	   1	/* vectored virtual to physical mapping */
+-#define USE_VIRCOPY   	   1	/* copy using virtual addressing */ 
++#define USE_VIRCOPY   	   1	/* copy using virtual addressing */
+ #define USE_PHYSCOPY  	   1 	/* copy using physical addressing */
+ #define USE_MEMSET  	   1	/* write char to a given memory area */
+ #define USE_RUNCTL         1	/* control stop flags of a process */
+ #define USE_STATECTL       1	/* let a process control its state */
+ #define USE_MCONTEXT       1	/* enable getting/setting of machine context */
++#define USE_CHRT           1
+ 
+ #if defined(__arm__)
+ #define USE_PADCONF        1	/* configure pinmux */
+ #endif /* __arm__ */
+ 
+ /* This section contains defines for valuable system resources that are used
+- * by device drivers. The number of elements of the vectors is determined by 
++ * by device drivers. The number of elements of the vectors is determined by
+  * the maximum needed by any given driver. The number of interrupt hooks may
+- * be incremented on systems with many device drivers. 
++ * be incremented on systems with many device drivers.
+  */
+ #ifndef USE_APIC
+ #define NR_IRQ_HOOKS	  16		/* number of interrupt hooks */
+diff --git a/minix/kernel/proc.c b/minix/kernel/proc.c
+index 3dff67c..88b187c 100644
+--- a/minix/kernel/proc.c
++++ b/minix/kernel/proc.c
+@@ -13,19 +13,19 @@
+  *
+  * The code here is critical to make everything work and is important for the
+  * overall performance of the system. A large fraction of the code deals with
+- * list manipulation. To make this both easy to understand and fast to execute 
++ * list manipulation. To make this both easy to understand and fast to execute
+  * pointer pointers are used throughout the code. Pointer pointers prevent
+- * exceptions for the head or tail of a linked list. 
++ * exceptions for the head or tail of a linked list.
+  *
+  *  node_t *queue, *new_node;	// assume these as global variables
+- *  node_t **xpp = &queue; 	// get pointer pointer to head of queue 
++ *  node_t **xpp = &queue; 	// get pointer pointer to head of queue
+  *  while (*xpp != NULL) 	// find last pointer of the linked list
+- *      xpp = &(*xpp)->next;	// get pointer to next pointer 
+- *  *xpp = new_node;		// now replace the end (the NULL pointer) 
++ *      xpp = &(*xpp)->next;	// get pointer to next pointer
++ *  *xpp = new_node;		// now replace the end (the NULL pointer)
+  *  new_node->next = NULL;	// and mark the new end of the list
+- * 
+- * For example, when adding a new node to the end of the list, one normally 
+- * makes an exception for an empty list and looks up the end of the list for 
++ *
++ * For example, when adding a new node to the end of the list, one normally
++ * makes an exception for an empty list and looks up the end of the list for
+  * nonempty lists. As shown above, this is not required with pointer pointers.
+  */
+ 
+@@ -70,25 +70,25 @@ static void set_idle_name(char * name, int n)
+         int i, c;
+         int p_z = 0;
+ 
+-        if (n > 999) 
+-                n = 999; 
++        if (n > 999)
++                n = 999;
+ 
+-        name[0] = 'i'; 
+-        name[1] = 'd'; 
+-        name[2] = 'l'; 
+-        name[3] = 'e'; 
++        name[0] = 'i';
++        name[1] = 'd';
++        name[2] = 'l';
++        name[3] = 'e';
+ 
+         for (i = 4, c = 100; c > 0; c /= 10) {
+                 int digit;
+ 
+-                digit = n / c;  
+-                n -= digit * c;  
++                digit = n / c;
++                n -= digit * c;
+ 
+                 if (p_z || digit != 0 || c == 1) {
+                         p_z = 1;
+                         name[i++] = '0' + digit;
+-                }   
+-        }    
++                }
++        }
+ 
+         name[i] = '\0';
+ 
+@@ -124,7 +124,7 @@ void proc_init(void)
+ 
+ 	/* Clear the process table. Announce each slot as empty and set up
+ 	 * mappings for proc_addr() and proc_nr() macros. Do the same for the
+-	 * table with privilege structures for the system processes. 
++	 * table with privilege structures for the system processes.
+ 	 */
+ 	for (rp = BEG_PROC_ADDR, i = -NR_TASKS; rp < END_PROC_ADDR; ++rp, ++i) {
+ 		rp->p_rts_flags = RTS_SLOT_FREE;/* initialize free slot */
+@@ -171,7 +171,7 @@ static void switch_address_space_idle(void)
+ }
+ 
+ /*===========================================================================*
+- *				idle					     * 
++ *				idle					     *
+  *===========================================================================*/
+ static void idle(void)
+ {
+@@ -229,7 +229,7 @@ static void idle(void)
+ }
+ 
+ /*===========================================================================*
+- *				switch_to_user				     * 
++ *				switch_to_user				     *
+  *===========================================================================*/
+ void switch_to_user(void)
+ {
+@@ -397,9 +397,9 @@ check_misc_flags:
+ 		p->p_misc_flags &= ~MF_FLUSH_TLB;
+ 	}
+ #endif
+-	
++
+ 	restart_local_timer();
+-	
++
+ 	/*
+ 	 * restore_user_context() carries out the actual mode switch from kernel
+ 	 * to userspace. This function does not return
+@@ -431,7 +431,7 @@ static int do_sync_ipc(struct proc * caller_ptr, /* who made the call */
+   if (call_nr < 0 || call_nr > IPCNO_HIGHEST || call_nr >= 32
+       || !(callname = ipc_call_names[call_nr])) {
+ #if DEBUG_ENABLE_IPC_WARNINGS
+-      printf("sys_call: trap %d not allowed, caller %d, src_dst %d\n", 
++      printf("sys_call: trap %d not allowed, caller %d, src_dst %d\n",
+           call_nr, proc_nr(caller_ptr), src_dst_e);
+ #endif
+ 	return(ETRAPDENIED);		/* trap denied by mask or kernel */
+@@ -442,7 +442,7 @@ static int do_sync_ipc(struct proc * caller_ptr, /* who made the call */
+ 	if (call_nr != RECEIVE)
+ 	{
+ #if 0
+-		printf("sys_call: %s by %d with bad endpoint %d\n", 
++		printf("sys_call: %s by %d with bad endpoint %d\n",
+ 			callname,
+ 			proc_nr(caller_ptr), src_dst_e);
+ #endif
+@@ -455,7 +455,7 @@ static int do_sync_ipc(struct proc * caller_ptr, /* who made the call */
+ 	/* Require a valid source and/or destination process. */
+ 	if(!isokendpt(src_dst_e, &src_dst_p)) {
+ #if 0
+-		printf("sys_call: %s by %d with bad endpoint %d\n", 
++		printf("sys_call: %s by %d with bad endpoint %d\n",
+ 			callname,
+ 			proc_nr(caller_ptr), src_dst_e);
+ #endif
+@@ -464,7 +464,7 @@ static int do_sync_ipc(struct proc * caller_ptr, /* who made the call */
+ 
+ 	/* If the call is to send to a process, i.e., for SEND, SENDNB,
+ 	 * SENDREC or NOTIFY, verify that the caller is allowed to send to
+-	 * the given destination. 
++	 * the given destination.
+ 	 */
+ 	if (call_nr != RECEIVE)
+ 	{
+@@ -480,13 +480,13 @@ static int do_sync_ipc(struct proc * caller_ptr, /* who made the call */
+ 	}
+   }
+ 
+-  /* Check if the process has privileges for the requested call. Calls to the 
+-   * kernel may only be SENDREC, because tasks always reply and may not block 
+-   * if the caller doesn't do receive(). 
++  /* Check if the process has privileges for the requested call. Calls to the
++   * kernel may only be SENDREC, because tasks always reply and may not block
++   * if the caller doesn't do receive().
+    */
+   if (!(priv(caller_ptr)->s_trap_mask & (1 << call_nr))) {
+ #if DEBUG_ENABLE_IPC_WARNINGS
+-      printf("sys_call: %s not allowed, caller %d, src_dst %d\n", 
++      printf("sys_call: %s not allowed, caller %d, src_dst %d\n",
+           callname, proc_nr(caller_ptr), src_dst_p);
+ #endif
+ 	return(ETRAPDENIED);		/* trap denied by mask or kernel */
+@@ -505,12 +505,12 @@ static int do_sync_ipc(struct proc * caller_ptr, /* who made the call */
+ 	/* A flag is set so that notifications cannot interrupt SENDREC. */
+ 	caller_ptr->p_misc_flags |= MF_REPLY_PEND;
+ 	/* fall through */
+-  case SEND:			
++  case SEND:
+ 	result = mini_send(caller_ptr, src_dst_e, m_ptr, 0);
+ 	if (call_nr == SEND || result != OK)
+ 		break;				/* done, or SEND failed */
+ 	/* fall through for SENDREC */
+-  case RECEIVE:			
++  case RECEIVE:
+ 	if (call_nr == RECEIVE) {
+ 		caller_ptr->p_misc_flags &= ~MF_REPLY_PEND;
+ 		IPC_STATUS_CLEAR(caller_ptr);  /* clear IPC status code */
+@@ -588,8 +588,8 @@ int do_ipc(reg_t r1, reg_t r2, reg_t r3)
+    */
+   switch(call_nr) {
+   	case SENDREC:
+-  	case SEND:			
+-  	case RECEIVE:			
++  	case SEND:
++  	case RECEIVE:
+   	case NOTIFY:
+   	case SENDNB:
+   	{
+@@ -606,10 +606,10 @@ int do_ipc(reg_t r1, reg_t r2, reg_t r3)
+   	     * table
+   	     */
+   	    size_t msg_size = (size_t) r2;
+-  
++
+   	    /* Process accounting for scheduling */
+ 	    caller_ptr->p_accounting.ipc_async++;
+- 
++
+   	    /* Limit size to something reasonable. An arbitrary choice is 16
+   	     * times the number of process table entries.
+   	     */
+@@ -633,18 +633,18 @@ int do_ipc(reg_t r1, reg_t r2, reg_t r3)
+ }
+ 
+ /*===========================================================================*
+- *				deadlock				     * 
++ *				deadlock				     *
+  *===========================================================================*/
+-static int deadlock(function, cp, src_dst_e) 
++static int deadlock(function, cp, src_dst_e)
+ int function;					/* trap number */
+ register struct proc *cp;			/* pointer to caller */
+ endpoint_t src_dst_e;				/* src or dst process */
+ {
+ /* Check for deadlock. This can happen if 'caller_ptr' and 'src_dst' have
+- * a cyclic dependency of blocking send and receive calls. The only cyclic 
++ * a cyclic dependency of blocking send and receive calls. The only cyclic
+  * dependency that is not fatal is if the caller and target directly SEND(REC)
+- * and RECEIVE to each other. If a deadlock is found, the group size is 
+- * returned. Otherwise zero is returned. 
++ * and RECEIVE to each other. If a deadlock is found, the group size is
++ * returned. Otherwise zero is returned.
+  */
+   register struct proc *xp;			/* process pointer */
+   int group_size = 1;				/* start with only caller */
+@@ -664,20 +664,20 @@ endpoint_t src_dst_e;				/* src or dst process */
+ #endif
+       group_size ++;				/* extra process in group */
+ 
+-      /* Check whether the last process in the chain has a dependency. If it 
++      /* Check whether the last process in the chain has a dependency. If it
+        * has not, the cycle cannot be closed and we are done.
+        */
+       if((src_dst_e = P_BLOCKEDON(xp)) == NONE)
+ 	return 0;
+ 
+-      /* Now check if there is a cyclic dependency. For group sizes of two,  
++      /* Now check if there is a cyclic dependency. For group sizes of two,
+        * a combination of SEND(REC) and RECEIVE is not fatal. Larger groups
+-       * or other combinations indicate a deadlock.  
++       * or other combinations indicate a deadlock.
+        */
+       if (src_dst_e == cp->p_endpoint) {	/* possible deadlock */
+ 	  if (group_size == 2) {		/* caller and src_dst */
+ 	      /* The function number is magically converted to flags. */
+-	      if ((xp->p_rts_flags ^ (function << 2)) & RTS_SENDING) { 
++	      if ((xp->p_rts_flags ^ (function << 2)) & RTS_SENDING) {
+ 	          return(0);			/* not a deadlock */
+ 	      }
+ 	  }
+@@ -702,7 +702,7 @@ endpoint_t src_dst_e;				/* src or dst process */
+ }
+ 
+ /*===========================================================================*
+- *				has_pending				     * 
++ *				has_pending				     *
+  *===========================================================================*/
+ static int has_pending(sys_map_t *map, int src_p, int asynm)
+ {
+@@ -799,7 +799,7 @@ void unset_notify_pending(struct proc * caller, int src_p)
+ }
+ 
+ /*===========================================================================*
+- *				mini_send				     * 
++ *				mini_send				     *
+  *===========================================================================*/
+ int mini_send(
+   register struct proc *caller_ptr,	/* who is trying to send a message? */
+@@ -823,13 +823,13 @@ int mini_send(
+ 	return EDEADSRCDST;
+   }
+ 
+-  /* Check if 'dst' is blocked waiting for this message. The destination's 
+-   * RTS_SENDING flag may be set when its SENDREC call blocked while sending.  
++  /* Check if 'dst' is blocked waiting for this message. The destination's
++   * RTS_SENDING flag may be set when its SENDREC call blocked while sending.
+    */
+   if (WILLRECEIVE(dst_ptr, caller_ptr->p_endpoint)) {
+ 	int call;
+ 	/* Destination is indeed waiting for this message. */
+-	assert(!(dst_ptr->p_misc_flags & MF_DELIVERMSG));	
++	assert(!(dst_ptr->p_misc_flags & MF_DELIVERMSG));
+ 
+ 	if (!(flags & FROM_KERNEL)) {
+ 		if(copy_msg_from_user(m_ptr, &dst_ptr->p_delivermsg))
+@@ -885,7 +885,7 @@ int mini_send(
+ 	/* Process is now blocked.  Put in on the destination's queue. */
+ 	assert(caller_ptr->p_q_link == NULL);
+ 	xpp = &dst_ptr->p_caller_q;		/* find end of list */
+-	while (*xpp) xpp = &(*xpp)->p_q_link;	
++	while (*xpp) xpp = &(*xpp)->p_q_link;
+ 	*xpp = caller_ptr;			/* add caller to end */
+ 
+ #if DEBUG_IPC_HOOK
+@@ -896,7 +896,7 @@ int mini_send(
+ }
+ 
+ /*===========================================================================*
+- *				mini_receive				     * 
++ *				mini_receive				     *
+  *===========================================================================*/
+ static int mini_receive(struct proc * caller_ptr,
+ 			endpoint_t src_e, /* which message source is wanted */
+@@ -950,7 +950,7 @@ static int mini_receive(struct proc * caller_ptr,
+ 
+             /* Found a suitable source, deliver the notification message. */
+ 	    hisep = proc_addr(src_proc_nr)->p_endpoint;
+-	    assert(!(caller_ptr->p_misc_flags & MF_DELIVERMSG));	
++	    assert(!(caller_ptr->p_misc_flags & MF_DELIVERMSG));
+ 	    assert(src_e == ANY || hisep == src_e);
+ 
+ 	    /* assemble message */
+@@ -1012,7 +1012,7 @@ static int mini_receive(struct proc * caller_ptr,
+ #if DEBUG_IPC_HOOK
+             hook_ipc_msgrecv(&caller_ptr->p_delivermsg, *xpp, caller_ptr);
+ #endif
+-		
++
+             *xpp = sender->p_q_link;		/* remove from queue */
+ 	    sender->p_q_link = NULL;
+ 	    goto receive_done;
+@@ -1021,7 +1021,7 @@ static int mini_receive(struct proc * caller_ptr,
+     }
+   }
+ 
+-  /* No suitable message is available or the caller couldn't send in SENDREC. 
++  /* No suitable message is available or the caller couldn't send in SENDREC.
+    * Block the process trying to receive, unless the flags tell otherwise.
+    */
+   if ( ! (flags & NON_BLOCKING)) {
+@@ -1030,7 +1030,7 @@ static int mini_receive(struct proc * caller_ptr,
+           return(ELOCKED);
+       }
+ 
+-      caller_ptr->p_getfrom_e = src_e;		
++      caller_ptr->p_getfrom_e = src_e;
+       RTS_SET(caller_ptr, RTS_RECEIVING);
+       return(OK);
+   } else {
+@@ -1044,7 +1044,7 @@ receive_done:
+ }
+ 
+ /*===========================================================================*
+- *				mini_notify				     * 
++ *				mini_notify				     *
+  *===========================================================================*/
+ int mini_notify(
+   const struct proc *caller_ptr,	/* sender of the notification */
+@@ -1063,15 +1063,15 @@ int mini_notify(
+ 
+   dst_ptr = proc_addr(dst_p);
+ 
+-  /* Check to see if target is blocked waiting for this message. A process 
++  /* Check to see if target is blocked waiting for this message. A process
+    * can be both sending and receiving during a SENDREC system call.
+    */
+     if (WILLRECEIVE(dst_ptr, caller_ptr->p_endpoint) &&
+       ! (dst_ptr->p_misc_flags & MF_REPLY_PEND)) {
+-      /* Destination is indeed waiting for a message. Assemble a notification 
++      /* Destination is indeed waiting for a message. Assemble a notification
+        * message and deliver it. Copy from pseudo-source HARDWARE, since the
+        * message is in the kernel's address space.
+-       */ 
++       */
+       assert(!(dst_ptr->p_misc_flags & MF_DELIVERMSG));
+ 
+       BuildNotifyMessage(&dst_ptr->p_delivermsg, proc_nr(caller_ptr), dst_ptr);
+@@ -1082,14 +1082,14 @@ int mini_notify(
+       RTS_UNSET(dst_ptr, RTS_RECEIVING);
+ 
+       return(OK);
+-  } 
++  }
+ 
+-  /* Destination is not ready to receive the notification. Add it to the 
++  /* Destination is not ready to receive the notification. Add it to the
+    * bit map with pending notifications. Note the indirectness: the privilege id
+    * instead of the process number is used in the pending bit map.
+-   */ 
++   */
+   src_id = priv(caller_ptr)->s_id;
+-  set_sys_bit(priv(dst_ptr)->s_notify_pending, src_id); 
++  set_sys_bit(priv(dst_ptr)->s_notify_pending, src_id);
+   return(OK);
+ }
+ 
+@@ -1137,7 +1137,7 @@ field, caller->p_name, entry, priv(caller)->s_asynsize, priv(caller)->s_asyntab)
+   			r = EFAULT;		\
+ 	                goto asyn_error; \
+   }						\
+-  			  } while(0)	
++  			  } while(0)
+ 
+ /*===========================================================================*
+  *				try_deliver_senda			     *
+@@ -1202,11 +1202,11 @@ int try_deliver_senda(struct proc *caller_ptr,
+ 	if (flags & AMF_DONE) continue;	/* Already done processing */
+ 
+ 	r = OK;
+-	if (!isokendpt(tabent.dst, &dst_p)) 
++	if (!isokendpt(tabent.dst, &dst_p))
+ 		r = EDEADSRCDST; /* Bad destination, report the error */
+-	else if (iskerneln(dst_p)) 
++	else if (iskerneln(dst_p))
+ 		r = ECALLDENIED; /* Asyn sends to the kernel are not allowed */
+-	else if (!may_send_to(caller_ptr, dst_p)) 
++	else if (!may_send_to(caller_ptr, dst_p))
+ 		r = ECALLDENIED; /* Send denied by IPC mask */
+ 	else 	/* r == OK */
+ 		dst_ptr = proc_addr(dst_p);
+@@ -1233,11 +1233,11 @@ int try_deliver_senda(struct proc *caller_ptr,
+ #endif
+ 	} else if (r == OK) {
+ 		/* Inform receiver that something is pending */
+-		set_sys_bit(priv(dst_ptr)->s_asyn_pending, 
+-			    priv(caller_ptr)->s_id); 
++		set_sys_bit(priv(dst_ptr)->s_asyn_pending,
++			    priv(caller_ptr)->s_id);
+ 		done = FALSE;
+ 		continue;
+-	} 
++	}
+ 
+ 	/* Store results */
+ 	tabent.result = r;
+@@ -1256,7 +1256,7 @@ asyn_error:
+ 		printf("KERNEL senda error %d\n", r);
+   }
+ 
+-  if (do_notify) 
++  if (do_notify)
+ 	mini_notify(proc_addr(ASYNCM), caller_ptr->p_endpoint);
+ 
+   if (!done) {
+@@ -1285,7 +1285,7 @@ static int mini_senda(struct proc *caller_ptr, asynmsg_t *table, size_t size)
+ 
+ 
+ /*===========================================================================*
+- *				try_async				     * 
++ *				try_async				     *
+  *===========================================================================*/
+ static int try_async(caller_ptr)
+ struct proc *caller_ptr;
+@@ -1302,7 +1302,7 @@ struct proc *caller_ptr;
+ 	if (privp->s_proc_nr == NONE)
+ 		continue;
+ 
+-	if (!get_sys_bit(*map, privp->s_id)) 
++	if (!get_sys_bit(*map, privp->s_id))
+ 		continue;
+ 
+ 	src_ptr = proc_addr(privp->s_proc_nr);
+@@ -1377,7 +1377,7 @@ static int try_one(struct proc *src_ptr, struct proc *dst_ptr)
+ 	if(flags & ~(AMF_VALID|AMF_DONE|AMF_NOTIFY|AMF_NOREPLY|AMF_NOTIFY_ERR))
+ 		r = EINVAL;
+ 	else if (!(flags & AMF_VALID)) /* Must contain message */
+-		r = EINVAL; 
++		r = EINVAL;
+ 	else if (flags & AMF_DONE) continue; /* Already done processing */
+ 
+ 	/* Clear done flag. The sender is done sending when all messages in the
+@@ -1398,7 +1398,7 @@ static int try_one(struct proc *src_ptr, struct proc *dst_ptr)
+ 	 * SENDREC and thus should not satisfy the receiving part of the
+ 	 * SENDREC. This message is to be delivered later.
+ 	 */
+-	if ((flags & AMF_NOREPLY) && (dst_ptr->p_misc_flags & MF_REPLY_PEND)) 
++	if ((flags & AMF_NOREPLY) && (dst_ptr->p_misc_flags & MF_REPLY_PEND))
+ 		continue;
+ 
+ 	/* Destination is ready to receive the message; deliver it */
+@@ -1421,7 +1421,7 @@ store_result:
+ 	break;
+   }
+ 
+-  if (do_notify) 
++  if (do_notify)
+ 	mini_notify(proc_addr(ASYNCM), src_ptr->p_endpoint);
+ 
+   if (done) {
+@@ -1491,7 +1491,7 @@ int cancel_async(struct proc *src_ptr, struct proc *dst_ptr)
+ 	if(flags & ~(AMF_VALID|AMF_DONE|AMF_NOTIFY|AMF_NOREPLY|AMF_NOTIFY_ERR))
+ 		r = EINVAL;
+ 	else if (!(flags & AMF_VALID)) /* Must contain message */
+-		r = EINVAL; 
++		r = EINVAL;
+ 	else if (flags & AMF_DONE) continue; /* Already done processing */
+ 
+ 	/* Message must be directed at receiving end */
+@@ -1508,7 +1508,7 @@ int cancel_async(struct proc *src_ptr, struct proc *dst_ptr)
+ 	A_INSRT(i);	/* Copy results to sender */
+   }
+ 
+-  if (do_notify) 
++  if (do_notify)
+ 	mini_notify(proc_addr(ASYNCM), src_ptr->p_endpoint);
+ 
+   if (!done) {
+@@ -1521,23 +1521,27 @@ asyn_error:
+ }
+ 
+ /*===========================================================================*
+- *				enqueue					     * 
++ *				enqueue					     *
+  *===========================================================================*/
+ void enqueue(
+   register struct proc *rp	/* this process is now runnable */
+ )
+ {
+-/* Add 'rp' to one of the queues of runnable processes.  This function is 
+- * responsible for inserting a process into one of the scheduling queues. 
++/* Add 'rp' to one of the queues of runnable processes.  This function is
++ * responsible for inserting a process into one of the scheduling queues.
+  * The mechanism is implemented here.   The actual scheduling policy is
+  * defined in sched() and pick_proc().
+  *
+  * This function can be used x-cpu as it always uses the queues of the cpu the
+  * process is assigned to.
+  */
++  if(rp->p_deadline > 0)
++  {
++	rp->p_priority = 7;
++  }
+   int q = rp->p_priority;	 		/* scheduling queue to use */
+   struct proc **rdy_head, **rdy_tail;
+-  
++
+   assert(proc_is_runnable(rp));
+ 
+   assert(q >= 0);
+@@ -1549,9 +1553,9 @@ void enqueue(
+   if (!rdy_head[q]) {		/* add to empty queue */
+       rdy_head[q] = rdy_tail[q] = rp; 		/* create a new queue */
+       rp->p_nextready = NULL;		/* mark new end */
+-  } 
++  }
+   else {					/* add to tail of queue */
+-      rdy_tail[q]->p_nextready = rp;		/* chain tail of queue */	
++      rdy_tail[q]->p_nextready = rp;		/* chain tail of queue */
+       rdy_tail[q] = rp;				/* set new queue tail */
+       rp->p_nextready = NULL;		/* mark new end */
+   }
+@@ -1642,7 +1646,7 @@ static void enqueue_head(struct proc *rp)
+ }
+ 
+ /*===========================================================================*
+- *				dequeue					     * 
++ *				dequeue					     *
+  *===========================================================================*/
+ void dequeue(struct proc *rp)
+ /* this process is no longer runnable */
+@@ -1669,11 +1673,11 @@ void dequeue(struct proc *rp)
+ 
+   rdy_tail = get_cpu_var(rp->p_cpu, run_q_tail);
+ 
+-  /* Now make sure that the process is not in its ready queue. Remove the 
+-   * process if it is found. A process can be made unready even if it is not 
++  /* Now make sure that the process is not in its ready queue. Remove the
++   * process if it is found. A process can be made unready even if it is not
+    * running by being sent a signal that kills it.
+    */
+-  prev_xp = NULL;				
++  prev_xp = NULL;
+   for (xpp = get_cpu_var_ptr(rp->p_cpu, run_q_head[q]); *xpp;
+ 		  xpp = &(*xpp)->p_nextready) {
+       if (*xpp == rp) {				/* found process to remove */
+@@ -1687,7 +1691,7 @@ void dequeue(struct proc *rp)
+       prev_xp = *xpp;				/* save previous in chain */
+   }
+ 
+-	
++
+   /* Process accounting for scheduling */
+   rp->p_accounting.dequeues++;
+ 
+@@ -1709,17 +1713,18 @@ void dequeue(struct proc *rp)
+ }
+ 
+ /*===========================================================================*
+- *				pick_proc				     * 
++ *				pick_proc				     *
+  *===========================================================================*/
+ static struct proc * pick_proc(void)
+ {
+ /* Decide who to run now.  A new process is selected an returned.
+- * When a billable process is selected, record it in 'bill_ptr', so that the 
++ * When a billable process is selected, record it in 'bill_ptr', so that the
+  * clock task can tell who to bill for system time.
+  *
+  * This function always uses the run queues of the local cpu!
+  */
+   register struct proc *rp;			/* process to run */
++  register struct proc *temp;
+   struct proc **rdy_head;
+   int q;				/* iterate over queues */
+ 
+@@ -1728,13 +1733,37 @@ static struct proc * pick_proc(void)
+    * If there are no processes ready to run, return NULL.
+    */
+   rdy_head = get_cpulocal_var(run_q_head);
+-  for (q=0; q < NR_SCHED_QUEUES; q++) {	
+-	if(!(rp = rdy_head[q])) {
++  for (q=0; q < NR_SCHED_QUEUES; q++) {  /*遍历优先级队列*/
++	if(!(rp = rdy_head[q])) {  /*如果队列为空*/
+ 		TRACE(VF_PICKPROC, printf("cpu %d queue %d empty\n", cpuid, q););
+ 		continue;
+ 	}
+ 	assert(proc_is_runnable(rp));
+-	if (priv(rp)->s_flags & BILLABLE)	 	
++	/****修改开始****/
++	/*选择剩余时间最少的进程,并放到队首*/
++	// rp = rdy_head[q];
++	// temp记录下一个就绪的进程
++	temp = rp->p_nextready;
++	if (q == 7)
++	{
++		while (temp != NULL)  /*遍历该链表*/
++		{
++			  if (temp->p_deadline > 0)
++			  {
++					/*如果当前进程结束或者temp进程剩余时间比当前进程更少*/
++					if (rp->p_deadline == 0 || (temp->p_deadline < rp->p_deadline))
++					{
++								if (proc_is_runnable(temp))  /*并且temp进程可以运行*/
++								{
++									rp = temp;  /*替换当前进程*/
++								}
++					}
++			  }
++			  temp = temp->p_nextready;
++		}
++	}
++	/****修改结束****/
++	if (priv(rp)->s_flags & BILLABLE)
+ 		get_cpulocal_var(bill_ptr) = rp; /* bill for system time */
+ 	return rp;
+   }
+@@ -1777,7 +1806,7 @@ const int fatalflag;
+ 	 * otherwise without. This allows us to print the where the
+ 	 * conversion was attempted, making the errors verbose without
+ 	 * adding code for that at every call.
+-	 * 
++	 *
+ 	 * If fatalflag is nonzero, we must panic if the conversion doesn't
+ 	 * succeed.
+ 	 */
+@@ -1851,7 +1880,7 @@ void reset_proc_accounting(struct proc *p)
+   p->p_accounting.time_in_queue = 0;
+   p->p_accounting.enter_queue = 0;
+ }
+-	
++
+ void copr_not_available_handler(void)
+ {
+ 	struct proc * p;
+diff --git a/minix/kernel/proc.h b/minix/kernel/proc.h
+index f311535..76628ed 100644
+--- a/minix/kernel/proc.h
++++ b/minix/kernel/proc.h
+@@ -7,8 +7,8 @@
+ #ifndef __ASSEMBLY__
+ 
+ /* Here is the declaration of the process table.  It contains all process
+- * data, including registers, flags, scheduling priority, memory map, 
+- * accounting, message passing (IPC) information, and so on. 
++ * data, including registers, flags, scheduling priority, memory map,
++ * accounting, message passing (IPC) information, and so on.
+  *
+  * Many assembly code routines reference fields in it.  The offsets to these
+  * fields are defined in the assembler include file sconst.h.  When changing
+@@ -20,6 +20,7 @@
+ #include "priv.h"
+ 
+ struct proc {
++  long p_deadline;
+   struct stackframe_s p_reg;	/* process' registers saved in stack frame */
+   struct segframe p_seg;	/* segment descriptors */
+   proc_nr_t p_nr;		/* number of this process (for fast access) */
+@@ -265,7 +266,7 @@ struct proc {
+ #define proc_nr(p) 	  ((p)->p_nr)
+ 
+ #define isokprocn(n)      ((unsigned) ((n) + NR_TASKS) < NR_PROCS + NR_TASKS)
+-#define isemptyn(n)       isemptyp(proc_addr(n)) 
++#define isemptyn(n)       isemptyp(proc_addr(n))
+ #define isemptyp(p)       ((p)->p_rts_flags == RTS_SLOT_FREE)
+ #define iskernelp(p)	  ((p) < BEG_USER_ADDR)
+ #define iskerneln(n)	  ((n) < 0)
+diff --git a/minix/kernel/system.c b/minix/kernel/system.c
+index 2d1aee1..67d1706 100644
+--- a/minix/kernel/system.c
++++ b/minix/kernel/system.c
+@@ -200,6 +200,7 @@ void system_init(void)
+   map(SYS_RUNCTL, do_runctl);		/* set/clear stop flag of a process */
+   map(SYS_UPDATE, do_update);		/* update a process into another */
+   map(SYS_STATECTL, do_statectl);	/* let a process control its state */
++  map(SYS_CHRT, do_chrt);
+ 
+   /* Signal handling. */
+   map(SYS_KILL, do_kill); 		/* cause a process to be signaled */
+diff --git a/minix/kernel/system.h b/minix/kernel/system.h
+index d7bd99b..429ca96 100644
+--- a/minix/kernel/system.h
++++ b/minix/kernel/system.h
+@@ -42,6 +42,11 @@ int do_fork(struct proc * caller, message *m_ptr);
+ #define do_fork NULL
+ #endif
+ 
++int do_chrt(struct proc * caller, message *m_ptr);
++#if ! USE_CHRT
++#define do_chrt NULL
++#endif
++
+ int do_clear(struct proc * caller, message *m_ptr);
+ #if ! USE_CLEAR
+ #define do_clear NULL
+diff --git a/minix/kernel/system/Makefile.inc b/minix/kernel/system/Makefile.inc
+index ef8cf2e..bdb3cd7 100644
+--- a/minix/kernel/system/Makefile.inc
++++ b/minix/kernel/system/Makefile.inc
+@@ -5,6 +5,7 @@
+ SRCS+= 	\
+ 	do_fork.c \
+ 	do_exec.c \
++	do_chrt.c \
+ 	do_clear.c \
+ 	do_exit.c \
+ 	do_trace.c \
+diff --git a/minix/lib/libc/sys/Makefile.inc b/minix/lib/libc/sys/Makefile.inc
+index 38fa560..f55decc 100644
+--- a/minix/lib/libc/sys/Makefile.inc
++++ b/minix/lib/libc/sys/Makefile.inc
+@@ -3,7 +3,7 @@
+ SRCS+= 	accept.c access.c adjtime.c bind.c brk.c sbrk.c m_closefrom.c getsid.c \
+ 	chdir.c chmod.c fchmod.c chown.c fchown.c chroot.c close.c \
+ 	clock_getres.c clock_gettime.c clock_settime.c \
+-	connect.c dup.c dup2.c execve.c fcntl.c flock.c fpathconf.c fork.c \
++	chrt.c connect.c dup.c dup2.c execve.c fcntl.c flock.c fpathconf.c fork.c \
+ 	fstatfs.c fstatvfs.c fsync.c ftruncate.c gcov_flush_sys.c getdents.c \
+ 	getegid.c getgid.c \
+ 	getgroups.c getitimer.c setitimer.c __getlogin.c getpeername.c \
+diff --git a/minix/lib/libsys/Makefile b/minix/lib/libsys/Makefile
+index e926f69..67be108 100644
+--- a/minix/lib/libsys/Makefile
++++ b/minix/lib/libsys/Makefile
+@@ -50,6 +50,7 @@ SRCS+=  \
+ 	srv_kill.c \
+ 	stacktrace.c \
+ 	sys_abort.c \
++	sys_chrt.c \
+ 	sys_clear.c \
+ 	sys_cprof.c \
+ 	sys_diagctl.c \
+diff --git a/minix/servers/pm/Makefile b/minix/servers/pm/Makefile
+index 75f4c54..165e0a1 100644
+--- a/minix/servers/pm/Makefile
++++ b/minix/servers/pm/Makefile
+@@ -4,7 +4,7 @@
+ PROG=	pm
+ SRCS=	main.c forkexit.c exec.c time.c alarm.c \
+ 	signal.c utility.c table.c trace.c getset.c misc.c \
+-	profile.c mcontext.c schedule.c
++	profile.c mcontext.c schedule.c chrt.c
+ 
+ DPADD+=	${LIBSYS} ${LIBTIMERS}
+ LDADD+=	-lsys -ltimers
+diff --git a/minix/servers/pm/proto.h b/minix/servers/pm/proto.h
+index 0d27fc8..9374cb4 100644
+--- a/minix/servers/pm/proto.h
++++ b/minix/servers/pm/proto.h
+@@ -89,3 +89,5 @@ struct mproc *find_proc(pid_t lpid);
+ int nice_to_priority(int nice, unsigned *new_q);
+ int pm_isokendpt(int ep, int *proc);
+ void tell_vfs(struct mproc *rmp, message *m_ptr);
++
++int do_chrt(void);
+\ No newline at end of file
+diff --git a/minix/servers/pm/table.c b/minix/servers/pm/table.c
+index 8c8e24a..a7a22e8 100644
+--- a/minix/servers/pm/table.c
++++ b/minix/servers/pm/table.c
+@@ -58,5 +58,6 @@ int (* const call_vec[NR_PM_CALLS])(void) = {
+ 	CALL(PM_EXEC_RESTART)	= do_execrestart,
+ 	CALL(PM_GETEPINFO)	= do_getepinfo,		/* getepinfo(2) */
+ 	CALL(PM_GETPROCNR)	= do_getprocnr,		/* getprocnr(2) */
+-	CALL(PM_GETSYSINFO)	= do_getsysinfo		/* getsysinfo(2) */
++	CALL(PM_GETSYSINFO)	= do_getsysinfo,	/* getsysinfo(2) */
++	CALL(PM_CHRT)       = do_chrt
+ };
